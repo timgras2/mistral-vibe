@@ -109,7 +109,10 @@ def capture_scenario(scenario: Scenario, launch: Launcher = exec_launch) -> Capt
             rows=ROWS,
             columns=COLUMNS,
             idle_marker=IDLE_MARKER,
-            steps=tuple(step.text for step in scenario.steps),
+            steps=tuple(
+                step.fragments if step.fragments else step.text
+                for step in scenario.steps
+            ),
             resizes=tuple(step.resize for step in scenario.steps),
             batch_keys=None if scenario.settle_per_key else BATCH_KEYS,
             exit_after_last_step=scenario.exit_after_last_step,

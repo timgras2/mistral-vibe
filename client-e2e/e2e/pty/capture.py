@@ -29,7 +29,8 @@ class CaptureSpec:
     rows: int
     columns: int
     idle_marker: bytes
-    steps: tuple[str, ...]
+    steps: tuple[str | tuple[str, ...], ...]
+    """Input steps: a string, or raw fragments written as separate writes."""
     resizes: tuple[tuple[int, int] | None, ...] = ()
     failsafe: float = 30.0
     batch_keys: tuple[str, str] | None = None
@@ -49,6 +50,8 @@ _COMMIT_KEYS = frozenset({"\r", "\n", "\t", "\x1b"})
 # A raw Escape read together with the release key parses as `ESC ESC`, eating the release, so a batched Escape uses its CSI u form.
 _CSI_U_ESCAPE = "\x1b[27u"
 _OSC52 = b"\x1b]52;c;"
+_FRAGMENT_GAP = 0.02
+"""Seconds between fragment writes, so the client reads each fragment alone."""
 
 
 class _ClipboardCapture:
@@ -111,7 +114,7 @@ def capture(
                 os.write(step_fd, b"\0")
                 buffered = _settle(fd, terminal, clipboard, buffered, spec)
             if spec.exit_after_last_step and index == len(spec.steps) - 1:
-                _write_all(fd, step.encode())
+                _write_all(fd, _step_bytes(step))
                 _wait_for_exit(pid, fd, spec.failsafe, spec.exit_responses)
                 continue
             resize = spec.resizes[index] if index < len(spec.resizes) else None
@@ -134,15 +137,46 @@ def capture(
         _terminate(pid, fd)
 
 
+def _step_bytes(step: str | tuple[str, ...]) -> bytes:
+    return (step if isinstance(step, str) else "".join(step)).encode()
+
+
+def _send_fragments(
+    fd: int,
+    terminal: Terminal,
+    clipboard: _ClipboardCapture,
+    buffered: bytearray,
+    spec: CaptureSpec,
+    fragments: tuple[str, ...],
+) -> bytearray:
+    """Write raw fragments back-to-back, then settle once.
+
+    A loaded terminal fragments one report across writes; the gap lets the
+    client read each fragment in its own read, the way it would in production.
+    The hold and release keys bracket the fragments so the idle marker waits
+    for the last one, exactly like a batched step.
+    """
+    hold, release = spec.batch_keys if spec.batch_keys else ("", "")
+    _write_all(fd, hold.encode())
+    for index, fragment in enumerate(fragments):
+        if index:
+            time.sleep(_FRAGMENT_GAP)
+        _write_all(fd, fragment.encode())
+    _write_all(fd, release.encode())
+    return _settle(fd, terminal, clipboard, buffered, spec)
+
+
 def _send_step(
     fd: int,
     terminal: Terminal,
     clipboard: _ClipboardCapture,
     buffered: bytearray,
     spec: CaptureSpec,
-    step: str,
+    step: str | tuple[str, ...],
 ) -> bytearray:
     """Send one input step and settle, batching its keys when the client allows."""
+    if isinstance(step, tuple):
+        return _send_fragments(fd, terminal, clipboard, buffered, spec, step)
     if spec.batch_keys is None:
         for key in split_keys(step):
             _write_all(fd, key.encode())

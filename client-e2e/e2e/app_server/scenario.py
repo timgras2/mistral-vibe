@@ -17,7 +17,8 @@ from e2e.app_server.config import SCENARIO_DIR
 AppServerEvent = dict[str, Any]
 Release = dict[str, int]
 Resize = dict[str, tuple[int, int]]
-Timeline = list[str | AppServerEvent | Release | Resize]
+Fragments = dict[str, list[str] | tuple[str, ...]]
+Timeline = list[str | AppServerEvent | Release | Resize | Fragments]
 _RESIZE_DIMENSIONS = 2
 
 
@@ -61,6 +62,8 @@ class Step:
     """One terminal input followed by the app-server events it releases."""
 
     text: str
+    fragments: tuple[str, ...] = ()
+    """Raw writes sent back-to-back in place of `text`, for split reports."""
     events: list[AppServerEvent] = field(default_factory=list)
     release: int = 0
     # Events gated on settles after this step's input, one event per settle.
@@ -242,6 +245,16 @@ def _split_timeline(timeline: Timeline) -> list[Step]:
             ):
                 raise ValueError("resize must be a positive (rows, columns) tuple")
             steps.append(Step("", resize=size))
+            continue
+        if "fragments" in item:
+            fragments = item["fragments"]
+            if (
+                not isinstance(fragments, (list, tuple))
+                or not fragments
+                or not all(isinstance(fragment, str) for fragment in fragments)
+            ):
+                raise ValueError("fragments must be a non-empty sequence of strings")
+            steps.append(Step("", fragments=tuple(fragments)))
             continue
         if not steps:
             raise ValueError("timeline starts with an event before any input")
